@@ -44,13 +44,30 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
+      - name: Extract metadata (Legacy)
+        id: meta-legacy
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            xxnuo/mtranserver
+            ghcr.io/xxnuo/mtranserver
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}},value=${{ steps.latest_tag.outputs.tag }},suffix=-legacy
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.latest_tag.outputs.tag }},suffix=-legacy
+            type=semver,pattern={{major}},value=${{ steps.latest_tag.outputs.tag }},suffix=-legacy
+            type=raw,value=legacy
+
+      - name: Extract metadata (Standard)
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: |
             xxnuo/mtranserver
             ghcr.io/xxnuo/mtranserver
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}},value=${{ steps.latest_tag.outputs.tag }}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.latest_tag.outputs.tag }}
@@ -67,44 +84,22 @@ jobs:
           fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - name: Build and push (Legacy - No AVX2)
+        uses: docker/build-push-action@v5
         with:
-          go-version: '1.23'
-          cache: true
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta-legacy.outputs.tags }}
+          labels: ${{ steps.meta-legacy.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            BUILD_VARIANT=legacy
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 9
-
-      - name: Get pnpm store directory
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
-
-      - name: Setup pnpm cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
-
-      - name: Build UI
-        run: |
-          cd ui
-          pnpm install --frozen-lockfile
-          pnpm build
-          echo "✓ UI build complete"
-          ls -lh dist/
-
-      - name: Build and push Docker image
+      - name: Build and push (Standard - AVX2)
         uses: docker/build-push-action@v5
         with:
           context: .

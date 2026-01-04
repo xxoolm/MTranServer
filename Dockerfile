@@ -1,76 +1,49 @@
-# Build stage
-FROM golang:1.25.3-bookworm AS builder
+FROM oven/bun:1 AS builder
+WORKDIR /app
 
-# Install build dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends git make curl && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+ARG VERSION
+ENV VERSION=${VERSION}
 
-WORKDIR /build
-
-# Copy go mod files
-COPY go.mod go.sum ./
-RUN go mod download
-
-# Copy source code (UI dist should be pre-built and copied)
+WORKDIR /app
 COPY . .
 
-# Download resources
-RUN make download
+RUN bun install --frozen-lockfile
+RUN cd ui && bun install --frozen-lockfile
 
-# Verify required files exist (should be prepared before docker build)
-RUN echo "Verifying build prerequisites..." && \
-    if [ ! -f "ui/dist/index.html" ]; then \
-        echo "ERROR: ui/dist/index.html not found!"; \
-        exit 1; \
-    fi && \
-    if [ ! -f "bin/worker" ]; then \
-        echo "ERROR: bin/worker not found!"; \
-        exit 1; \
-    fi && \
-    if [ ! -f "internal/docs/swagger.json" ]; then \
-        echo "ERROR: internal/docs/swagger.json not found!"; \
-        exit 1; \
-    fi && \
-    echo "✓ All prerequisites verified"
+RUN if [ -n "$VERSION" ]; then \
+    sed -i "s/export const VERSION = '.*';/export const VERSION = '$VERSION';/" src/version/index.ts; \
+    fi
 
-# Build binary
-ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags "-X github.com/xxnuo/MTranServer/internal/version.Version=${VERSION} -s -w" \
-    -o mtranserver \
-    ./cmd/mtranserver
+RUN bun run build:docker
 
-# Runtime stage
 FROM alpine:latest
 
-# Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata curl
+RUN apk add --no-cache libstdc++ ca-certificates
 
 WORKDIR /app
 
-# Copy binary from builder
-COPY --from=builder /build/mtranserver /app/mtranserver
+COPY --from=builder /app/dist ./dist
 
-# Create directories for data and models
-RUN mkdir -p /app/data /app/models
+ARG BUILD_VARIANT
 
-# Expose port
-EXPOSE 8989
+RUN ARCH=$(uname -m) && \
+    case "$ARCH" in \
+      x86_64) \
+        if [ "$BUILD_VARIANT" = "legacy" ]; then \
+          mv dist/*-linux-amd64-musl-legacy ./mtranserver; \
+        else \
+          mv dist/*-linux-amd64-musl ./mtranserver; \
+        fi ;; \
+      aarch64) mv dist/*-linux-arm64-musl ./mtranserver ;; \
+      *) echo "Unsupported architecture: $ARCH"; exit 1 ;; \
+    esac && \
+    chmod +x ./mtranserver && \
+    rm -rf dist
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8989/health || exit 1
-
-# Set default environment variables
 ENV MT_HOST=0.0.0.0 \
     MT_PORT=8989 \
-    MT_LOG_LEVEL=warn \
-    MT_CONFIG_DIR=/app/data \
-    MT_MODEL_DIR=/app/models \
-    MT_ENABLE_UI=true \
-    MT_OFFLINE=false
+    NODE_ENV=production
 
-# Run the application
-CMD ["/app/mtranserver"]
+EXPOSE 8989
+
+CMD ["./mtranserver"]
