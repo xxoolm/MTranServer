@@ -1,7 +1,28 @@
-v3.2.1
-- 重构进程守护，解决进程残留问题
-- 添加 workers-per-language 参数，支持每个语言启动多个 worker 进程，默认 1
-- 降低 worker 空闲超时时间，默认 60 秒
+## v4.0.29
 
-历史更新内容请参考 [HISTORY.md](HISTORY.md)
-For historical update content, please refer to [HISTORY.md](HISTORY.md)
+- UI：新增跟随系统主题功能
+- UI：使用 IndexDB 存储历史记录，提升性能
+
+## v4.0.28
+
+- 桌面端：托盘菜单添加开机启动开关
+- 桌面端：检测更新功能
+
+## v4.0.27
+
+- 添加 DeepLX 兼容接口
+- 增大断句长度，提升了翻译质量，建议升级
+- 修复译文标点符号格式错误的问题
+
+## v4.0.20
+
+- 发布到 npm，现在可以通过 `npm i -g mtranserver` 安装或者 `npx mtranserver` 来运行服务器啦！
+- 修复语言检测的内存安全问题
+- 修复混合语言检测的逻辑问题，现在能够正常翻译混合语言文本为目标语言了
+- 新增 `--download` 命令，支持通过命令行批量下载语言对模型 (例如 `mtranserver --download en_zh zh_en`)
+- 新增 `--languages` 命令，列出所有可下载的语言对
+- UI：新增宽屏模式按钮
+- UI：新增多面板并排翻译的功能
+- UI：新增记忆语言、主题等功能开关的功能
+- UI：新增副标题文档地址按钮
+- UI：修复历史记录没有滚动条的问题

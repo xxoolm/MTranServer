@@ -7,128 +7,123 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 jobs:
-  build-ui:
+  build-server:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
         with:
-          node-version: "20"
+          bun-version: latest
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      - name: Install dependencies
+        run: bun install
 
-      - name: Build UI
-        run: make build-ui
+      - name: Sync version from tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION="v$(cat package.json | grep '"version"' | head -1 | sed 's/.*"version": "\(.*\)".*/\1/')"
+          fi
+          echo "Syncing version to ${VERSION}"
+          bun run bump ${VERSION}
 
-      - name: Upload UI artifact
+      - name: Build Server
+        run: bun run build:all
+
+      - name: Upload Server Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ui-dist
-          path: ui/dist/
+          name: binaries
+          path: dist/mtranserver-*
 
-  build:
-    needs: build-ui
+  build-desktop:
     strategy:
       matrix:
-        include:
-          - os: ubuntu-latest
-            goos: linux
-            goarch: amd64
-          - os: ubuntu-latest
-            goos: linux
-            goarch: arm64
-          - os: ubuntu-latest
-            goos: linux
-            goarch: 386
-          - os: macos-latest
-            goos: darwin
-            goarch: amd64
-          - os: macos-latest
-            goos: darwin
-            goarch: arm64
-          - os: windows-latest
-            goos: windows
-            goarch: amd64
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+      GITHUB_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
         with:
-          go-version: "1.25.3"
+          bun-version: latest
 
-      - name: Download UI artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ui-dist
-          path: ui/dist/
+      - name: Install dependencies
+        run: bun install
 
-      - name: Download resources
-        run: make download
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+      - name: Sync version from tag
+        shell: bash
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION="v$(grep '"version"' package.json | head -1 | sed 's/.*"version": "\(.*\)".*/\1/')"
+          fi
+          echo "Syncing version to ${VERSION}"
+          bun run bump ${VERSION}
 
-      - name: Build docs
-        run: make generate-docs
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+      - name: Build Desktop (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: bun run build:electron -- --linux
 
-      - name: Build binary
-        run: make build
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+      - name: Build Desktop (Windows)
+        if: matrix.os == 'windows-latest'
+        run: bun run build:electron -- --win
 
-      - name: Upload artifact
+      - name: Build Desktop (macOS)
+        if: matrix.os == 'macos-latest'
+        run: bun run build:electron -- --mac
+
+      - name: Upload Desktop Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: mtranserver-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/mtranserver-${{ matrix.goos }}-${{ matrix.goarch }}*
+          name: desktop-${{ matrix.os }}
+          path: release/mtranserver-desktop-*
 
   release:
-    needs: build
+    needs: [build-server, build-desktop]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Download Artifacts
+      - name: Download Server Artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
-          pattern: mtranserver-*
+          name: binaries
+          path: release-assets
 
-      - name: Organize Release Assets
+      - name: Download Desktop Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Determine Release Tag
+        id: tag
         run: |
-          mkdir -p release-assets
-
-          VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0-dev")
-          VERSION=${VERSION#v}
-
-          # Copy and rename binaries with version
-          find artifacts/mtranserver-linux-amd64 -name "mtranserver-linux-amd64" -type f -exec cp {} release-assets/mtranserver-${VERSION}-linux-amd64 \;
-          find artifacts/mtranserver-linux-arm64 -name "mtranserver-linux-arm64" -type f -exec cp {} release-assets/mtranserver-${VERSION}-linux-arm64 \;
-          find artifacts/mtranserver-linux-386 -name "mtranserver-linux-386" -type f -exec cp {} release-assets/mtranserver-${VERSION}-linux-386 \;
-          find artifacts/mtranserver-darwin-amd64 -name "mtranserver-darwin-amd64" -type f -exec cp {} release-assets/mtranserver-${VERSION}-darwin-amd64 \;
-          find artifacts/mtranserver-darwin-arm64 -name "mtranserver-darwin-arm64" -type f -exec cp {} release-assets/mtranserver-${VERSION}-darwin-arm64 \;
-          find artifacts/mtranserver-windows-amd64 -name "mtranserver-windows-amd64.exe" -type f -exec cp {} release-assets/mtranserver-${VERSION}-windows-amd64.exe \;
-
-          ls -lh release-assets/
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            LATEST_TAG=$(git describe --tags --abbrev=0)
+            echo "tag_name=$LATEST_TAG" >> $GITHUB_OUTPUT
+            echo "Using latest tag: $LATEST_TAG"
+          else
+            echo "tag_name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "Using ref name: ${{ github.ref_name }}"
+          fi
 
       - name: Generate Checksums
         run: |
@@ -136,76 +131,105 @@ jobs:
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
 
-      - name: Determine Release Type
-        id: release_info
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            echo "is_release=true" >> $GITHUB_OUTPUT
-            echo "tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-            echo "prerelease=false" >> $GITHUB_OUTPUT
-          else
-            echo "is_release=false" >> $GITHUB_OUTPUT
-            echo "tag_name=dev-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-            echo "prerelease=true" >> $GITHUB_OUTPUT
-          fi
-
       - name: Generate Release Body
         id: generate_body
         run: |
-          TAG="${{ steps.release_info.outputs.tag_name }}"
+          TAG="${{ steps.tag.outputs.tag_name }}"
           REPO="${{ github.repository }}"
-          IS_RELEASE="${{ steps.release_info.outputs.is_release }}"
-          VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0-dev")
-          VERSION=${VERSION#v}
+          # Derive version from TAG to be consistent with artifacts
+          VERSION=${TAG#v} 
 
-          if [ "$IS_RELEASE" == "true" ]; then
-            WARNING=""
+          # Use VERSION derived from tag instead of package.json to ensure consistency with builds
+          echo "Using version: $VERSION"
+
+          if [[ "${{ github.ref_name }}" == *"dev"* ]]; then
+            WARNING=$(printf "**This is a development release. DO NOT USE IT!**\n\n")
           else
-            WARNING="**Development build - may be unstable**"$'\n\n'
+            WARNING=""
           fi
 
-          CHANGELOG=""
-          if [ -f "CHANGELOG.md" ]; then
-            CHANGELOG=$(cat CHANGELOG.md)
-          fi
+          cat > release_body.md << 'EOF'
+          ${WARNING}## Desktop Client
 
-          cat > release_body.md << EOF
-          ${WARNING}## MTranServer
-          
-          ## Changelog
-          ${CHANGELOG}
+          | Platform | Architecture | Binary |
+          |----------|-------------|--------|
+          | Linux | x64 | [mtranserver-desktop-${VERSION}-linux-x64.AppImage](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-desktop-${VERSION}-linux-x64.AppImage) |
+          | Linux | arm64 | [mtranserver-desktop-${VERSION}-linux-arm64.AppImage](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-desktop-${VERSION}-linux-arm64.AppImage) |
+          | Linux | x64 (deb) | [mtranserver-desktop-${VERSION}-linux-x64.deb](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-desktop-${VERSION}-linux-x64.deb) |
+          | Linux | arm64 (deb) | [mtranserver-desktop-${VERSION}-linux-arm64.deb](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-desktop-${VERSION}-linux-arm64.deb) |
+          | Linux | x64 (rpm) | [mtranserver-desktop-${VERSION}-linux-x64.rpm](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-desktop-${VERSION}-linux-x64.rpm) |
+          | Linux | arm64 (rpm) | [mtranserver-desktop-${VERSION}-linux-arm64.rpm](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-desktop-${VERSION}-linux-arm64.rpm) |
+          | macOS | x64 | [mtranserver-desktop-${VERSION}-mac-x64.dmg](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-desktop-${VERSION}-mac-x64.dmg) |
+          | macOS | arm64 | [mtranserver-desktop-${VERSION}-mac-arm64.dmg](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-desktop-${VERSION}-mac-arm64.dmg) |
+          | Windows | x64 | [mtranserver-desktop-${VERSION}-win-x64.exe](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-desktop-${VERSION}-win-x64.exe) |
 
-          ## Download
+          > 桌面端启动后会创建一个托盘菜单，通过菜单可以方便的管理服务。
+
+          **macOS**: 拖动安装后，如果打开 MTranServer App 提示有问题无法打开，需要运行以下命令修复：
+
+          > **macOS**: If you see any error when opening MTranServer App after installing, run this command in Terminal App: 
+
+          ```bash
+          sudo xattr -d com.apple.quarantine "/Applications/MTranServer.app"
+          ```
+
+          ## Server Binary
 
           | Platform | Architecture | Binary |
           |----------|-------------|--------|
           | Linux | x64 | [mtranserver-${VERSION}-linux-amd64](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-${VERSION}-linux-amd64) |
+          | Linux | x64 (legacy) | [mtranserver-${VERSION}-linux-amd64-legacy](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-${VERSION}-linux-amd64-legacy) |
           | Linux | ARM64 | [mtranserver-${VERSION}-linux-arm64](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-${VERSION}-linux-arm64) |
-          | Linux | x86 | [mtranserver-${VERSION}-linux-386](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-${VERSION}-linux-386) |
+          | Linux (musl) | x64 | [mtranserver-${VERSION}-linux-amd64-musl](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-${VERSION}-linux-amd64-musl) |
+          | Linux (musl) | x64 (legacy) | [mtranserver-${VERSION}-linux-amd64-musl-legacy](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-${VERSION}-linux-amd64-musl-legacy) |
+          | Linux (musl) | ARM64 | [mtranserver-${VERSION}-linux-arm64-musl](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-${VERSION}-linux-arm64-musl) |
           | macOS | Intel | [mtranserver-${VERSION}-darwin-amd64](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-${VERSION}-darwin-amd64) |
+          | macOS | Intel (legacy) | [mtranserver-${VERSION}-darwin-amd64-legacy](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-${VERSION}-darwin-amd64-legacy) |
           | macOS | Apple Silicon | [mtranserver-${VERSION}-darwin-arm64](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-${VERSION}-darwin-arm64) |
           | Windows | x64 | [mtranserver-${VERSION}-windows-amd64.exe](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-${VERSION}-windows-amd64.exe) |
+          | Windows | x64 (legacy) | [mtranserver-${VERSION}-windows-amd64-legacy.exe](https://github.com/${REPO}/releases/download/${TAG}/mtranserver-${VERSION}-windows-amd64-legacy.exe) |
 
-          ### Checksums
+          ## Note
 
-          See [SHA256SUMS](https://github.com/${REPO}/releases/download/${TAG}/SHA256SUMS) for file verification.
+          **legacy**: 仅适用于使用普通版本会遇到如 'Illegal instruction' 这样问题的旧硬件（无 AVX2 指令集的 CPU），大多数人不需要这个，因为它更慢。
+
+          > **legacy**: Use only if you experience 'Illegal instruction' crashes on very old hardware (non-AVX2 CPUs). Most people don't need this because it's slower.
+
+          **musl**: 仅适用于 Linux 使用 musl libc 的用户，大多数人不需要这个。
+
+          > **musl**: Use only if you are on Linux with musl libc. Most people don't need this.
+
+          ## Docker
+
+          Image: `xxnuo/mtranserver:latest`
+
+          可执行文件版本主要面向个人桌面端部署，如果需要更高性能和稳定性，推荐使用 Docker 版本。
+
+          > Executable version is mainly for personal desktop deployment. If you need higher performance and stability, it is recommended to use the Docker version.
+
+          如果你的 CPU 不支持 AVX 并且使用 legacy 版本也报错，推荐使用 Docker 版本而非可执行文件版本，因为 Docker 版本会自动选择合适的架构运行且速度更快。
+
+          > If your CPU does not support AVX and using legacy version also crashes, it is recommended to use the Docker version instead of the executable file version, because the Docker version will automatically select the appropriate architecture to run and is faster.
+
+          ## Changelog
           EOF
 
-          {
-            echo "body<<EOFMARKER"
-            cat release_body.md
-            echo "EOFMARKER"
-          } >> $GITHUB_OUTPUT
+          sed -i "s|\${WARNING}|${WARNING}|g" release_body.md
+          sed -i "s|\${REPO}|${REPO}|g" release_body.md
+          sed -i "s|\${TAG}|${TAG}|g" release_body.md
+          sed -i "s|\${VERSION}|${VERSION}|g" release_body.md
+
+          if [ -f CHANGELOG.md ]; then
+            echo "" >> release_body.md
+            cat CHANGELOG.md >> release_body.md
+          fi
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release_info.outputs.tag_name }}
-          name: ${{ steps.release_info.outputs.is_release == 'true' && format('Release {0}', steps.release_info.outputs.tag_name) || format('Development Build ({0})', steps.release_info.outputs.tag_name) }}
-          body: ${{ steps.generate_body.outputs.body }}
+          tag_name: ${{ steps.tag.outputs.tag_name }}
+          name: ${{ steps.tag.outputs.tag_name }}
+          body_path: release_body.md
           files: release-assets/*
-          prerelease: ${{ steps.release_info.outputs.prerelease }}
           draft: false
           fail_on_unmatched_files: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
